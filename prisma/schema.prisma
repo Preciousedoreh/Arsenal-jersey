@@ -1,0 +1,241 @@
+// Prisma schema for the Jersey Store API.
+// Money is always stored as integer minor units (cents/kobo) — never floats.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── Auth (Better Auth core tables) ───────────────────────────────
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+model User {
+  id            String   @id
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  role          Role     @default(CUSTOMER)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  sessions           Session[]
+  accounts           Account[]
+  orders             Order[]            @relation("CustomerOrders")
+  cancelledOrders    Order[]            @relation("CancelledBy")
+  inventoryMovements InventoryMovement[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verifications")
+}
+
+/// Failed-login tracking for account lockout. Keyed by normalised email so it works
+/// identically whether or not the account exists (no user enumeration).
+model LoginLockout {
+  email          String    @id
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+  updatedAt      DateTime  @updatedAt
+
+  @@map("login_lockouts")
+}
+
+// ─────────────────────────────── Catalogue & inventory ───────────────────────────────
+
+enum ProductCategory {
+  JERSEY
+  MERCHANDISE
+}
+
+model Product {
+  id                String          @id @default(cuid())
+  name              String
+  slug              String          @unique
+  description       String          @default("")
+  category          ProductCategory
+  priceCents        Int
+  currency          String          @db.Char(3)
+  sku               String          @unique
+  images            String[]        @default([])
+  /// Guarded by a CHECK (stockQuantity >= 0) constraint in the migration.
+  stockQuantity     Int             @default(0)
+  lowStockThreshold Int             @default(5)
+  isActive          Boolean         @default(true)
+  /// Set when a product that has orders is "deleted" (soft delete).
+  deletedAt         DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  orderItems OrderItem[]
+  movements  InventoryMovement[]
+
+  @@index([category, isActive])
+  @@index([name])
+  @@map("products")
+}
+
+enum InventoryReason {
+  RESTOCK
+  ORDER
+  CANCEL
+  ADJUSTMENT
+}
+
+/// Append-only audit log of every stock change.
+model InventoryMovement {
+  id         String          @id @default(cuid())
+  productId  String
+  product    Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  change     Int
+  stockAfter Int
+  reason     InventoryReason
+  note       String?
+  orderId    String?
+  order      Order?          @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  adminId    String?
+  admin      User?           @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  createdAt  DateTime        @default(now())
+
+  @@index([productId, createdAt])
+  @@index([orderId])
+  @@map("inventory_movements")
+}
+
+// ─────────────────────────────── Orders ───────────────────────────────
+
+enum OrderStatus {
+  PENDING
+  PAID
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+model Order {
+  id               String      @id @default(cuid())
+  userId           String
+  user             User        @relation("CustomerOrders", fields: [userId], references: [id], onDelete: Restrict)
+  status           OrderStatus @default(PENDING)
+  currency         String      @db.Char(3)
+  subtotalCents    Int
+  totalCents       Int
+  /// Free-form shipping address snapshot (validated by zod at the API boundary).
+  shippingAddress  Json?
+  paymentProvider  String?
+  paymentReference String?     @unique
+  paidAt           DateTime?
+  shippedAt        DateTime?
+  deliveredAt      DateTime?
+  cancelledAt      DateTime?
+  cancelReason     String?
+  cancelledById    String?
+  cancelledBy      User?       @relation("CancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  items     OrderItem[]
+  movements InventoryMovement[]
+  payments  Payment[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("orders")
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+/// One row per payment attempt. Every reference ever issued stays resolvable, so a webhook for
+/// an older attempt (customer clicked "pay" twice) is never lost.
+model Payment {
+  id          String        @id @default(cuid())
+  orderId     String
+  order       Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  provider    String
+  reference   String        @unique
+  amountCents Int
+  currency    String        @db.Char(3)
+  status      PaymentStatus @default(PENDING)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([orderId])
+  @@map("payments")
+}
+
+/// Line item with a snapshot of the product's name/sku/price at purchase time.
+model OrderItem {
+  id             String  @id @default(cuid())
+  orderId        String
+  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId      String
+  product        Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productName    String
+  productSku     String
+  unitPriceCents Int
+  quantity       Int
+  lineTotalCents Int
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
