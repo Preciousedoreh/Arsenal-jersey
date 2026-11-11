@@ -1,0 +1,117 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens. Everything is a Tailwind v4 theme variable, so each one is both a CSS variable
+ * (var(--color-primary)) and a utility (bg-primary, text-gold, max-w-site, font-display...).
+ * Theme: red & white, with gold as the premium accent.
+ */
+@theme {
+  /* Brand colours */
+  --color-primary: #ef0107;
+  --color-primary-hover: #c80006;
+  --color-primary-deep: #a80005;
+  --color-gold: #9c824a;
+  --color-gold-light: #d6b66e;
+  --color-navy: #063672;
+  /* Dark sections: a near-black with a warm red undertone */
+  --color-ink: #140a0b;
+  --color-ink-soft: #241415;
+  --color-surface: #f6f6f7;
+  --color-line: #e6e6e8;
+  --color-muted: #6b6b73;
+
+  /* Typography */
+  --font-display: var(--font-anton), Impact, 'Arial Narrow', sans-serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --text-micro: 0.6875rem; /* 11px – card names, meta */
+  --text-micro--line-height: 1rem;
+  --text-tiny: 0.625rem; /* 10px – badges */
+  --text-tiny--line-height: 0.875rem;
+  --tracking-label: 0.14em;
+  --tracking-wide-label: 0.22em;
+  --leading-display: 0.88;
+
+  /* Layout */
+  --container-site: 80rem; /* 1280px content width */
+  --radius-btn: 3px;
+  --spacing-section: 5rem; /* vertical rhythm between sections (py-section) */
+  --spacing-section-lg: 7rem;
+
+  /* Motion */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-marquee: marquee 30s linear infinite;
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    background-color: var(--color-white);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    /* Safety net: never show a horizontal page scrollbar. `clip` (unlike `hidden`) keeps the
+       sticky navbar working. Overflow bugs should still be fixed at the source. */
+    overflow-x: clip;
+  }
+
+  /* Anchor targets shouldn't hide under the sticky navbar. */
+  section[id] {
+    scroll-margin-top: 5rem;
+  }
+
+  /* Visible, on-brand keyboard focus everywhere. */
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* Shared headline treatment: condensed, uppercase, tight. */
+  .headline {
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    line-height: var(--leading-display);
+    letter-spacing: -0.005em;
+  }
+
+  /* Small uppercase label text used across the UI. */
+  .eyebrow {
+    font-size: var(--text-micro);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+  }
+
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}

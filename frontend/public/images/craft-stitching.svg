@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420" width="800" height="420" preserveAspectRatio="xMidYMid slice"><defs>
+    <pattern id="weave" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(30)">
+      <rect width="8" height="8" fill="#e9e6df"/><path d="M0 4 H8" stroke="#d6d1c6" stroke-width="2"/><path d="M4 0 V8" stroke="#dcd7cc" stroke-width="1"/>
+    </pattern>
+    <linearGradient id="sl" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#000" stop-opacity=".35"/><stop offset=".5" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".4"/></linearGradient>
+  </defs>
+  <rect width="800" height="420" fill="url(#weave)"/>
+  <path d="M-20 300 L820 120 L820 180 L-20 360 Z" fill="#EF0107"/>
+  <path d="M-20 290 L820 110" stroke="#9C824A" stroke-width="5" stroke-dasharray="16 10"/>
+  <path d="M-20 372 L820 192" stroke="#9C824A" stroke-width="5" stroke-dasharray="16 10"/>
+  <path d="M-20 318 L820 138" stroke="#fff" stroke-width="2" stroke-dasharray="8 8" opacity=".7"/>
+  <rect width="800" height="420" fill="url(#sl)"/></svg>

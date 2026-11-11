@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { prisma } from '../src/lib/prisma.js';
 import { signMockPayload } from '../src/services/payment/payment.service.js';
 import {
+  stockOf,
   createProduct,
   emailsTo,
   loggedInUser,
@@ -28,10 +29,15 @@ beforeEach(async () => {
   customer = await loggedInUser(server, { role: 'CUSTOMER' });
 });
 
-const stockOf = async (id: string) =>
-  (await prisma.product.findUniqueOrThrow({ where: { id } })).stockQuantity;
-const order = (agent: Client, items: { productId: string; quantity: number }[]) =>
-  agent.post('/api/orders').send({ items });
+const order = (
+  agent: Client,
+  items: {
+    productId: string;
+    size?: string;
+    quantity: number;
+    customization?: { name?: string; number?: string };
+  }[],
+) => agent.post('/api/orders').send({ items });
 
 describe('placing orders', () => {
   it('deducts stock, snapshots prices, logs movements and sends emails', async () => {
@@ -40,9 +46,9 @@ describe('placing orders', () => {
 
     const res = await customer.agent.post('/api/orders').send({
       items: [
-        { productId: jersey.id, quantity: 2 },
-        { productId: scarf.id, quantity: 1 },
-        { productId: jersey.id, quantity: 1 }, // duplicates are merged
+        { productId: jersey.id, size: 'M', quantity: 2 },
+        { productId: scarf.id, size: 'M', quantity: 1 },
+        { productId: jersey.id, size: 'M', quantity: 1 }, // duplicates are merged
       ],
       shippingAddress: {
         fullName: 'Fan One',
@@ -96,13 +102,19 @@ describe('placing orders', () => {
     const scarce = await createProduct({ stockQuantity: 1, name: 'Scarce Jersey' });
 
     const res = await order(customer.agent, [
-      { productId: plenty.id, quantity: 2 },
-      { productId: scarce.id, quantity: 2 },
+      { productId: plenty.id, size: 'M', quantity: 2 },
+      { productId: scarce.id, size: 'M', quantity: 2 },
     ]);
     expect(res.status).toBe(409);
     expect(res.body.error).toMatchObject({
       code: 'INSUFFICIENT_STOCK',
-      details: { productId: scarce.id, productName: 'Scarce Jersey', requested: 2, available: 1 },
+      details: {
+        productId: scarce.id,
+        productName: 'Scarce Jersey',
+        size: 'M',
+        requested: 2,
+        available: 1,
+      },
     });
 
     expect(await stockOf(plenty.id)).toBe(10); // the first line's deduction was rolled back
@@ -113,11 +125,12 @@ describe('placing orders', () => {
 
   it('rejects inactive and unknown products', async () => {
     const inactive = await createProduct({ isActive: false });
-    expect((await order(customer.agent, [{ productId: inactive.id, quantity: 1 }])).status).toBe(
-      409,
-    );
     expect(
-      (await order(customer.agent, [{ productId: 'does-not-exist', quantity: 1 }])).status,
+      (await order(customer.agent, [{ productId: inactive.id, size: 'M', quantity: 1 }])).status,
+    ).toBe(409);
+    expect(
+      (await order(customer.agent, [{ productId: 'does-not-exist', size: 'M', quantity: 1 }]))
+        .status,
     ).toBe(404);
     expect((await order(customer.agent, [])).status).toBe(400);
   });
@@ -134,7 +147,9 @@ describe('placing orders', () => {
     ]);
     const results = await Promise.all(
       Array.from({ length: ATTEMPTS }, (_, i) =>
-        order(buyers[i % buyers.length]!.agent, [{ productId: product.id, quantity: 1 }]),
+        order(buyers[i % buyers.length]!.agent, [
+          { productId: product.id, size: 'M', quantity: 1 },
+        ]),
       ),
     );
 
@@ -160,7 +175,7 @@ describe('placing orders', () => {
     const product = await createProduct({ stockQuantity: 7, lowStockThreshold: 0 });
     const results = await Promise.all(
       [3, 3, 3, 2, 2, 1, 1, 1].map((quantity) =>
-        order(customer.agent, [{ productId: product.id, quantity }]),
+        order(customer.agent, [{ productId: product.id, size: 'M', quantity }]),
       ),
     );
     const soldUnits = results
@@ -173,12 +188,12 @@ describe('placing orders', () => {
 
   it('emails admins once when stock crosses the low-stock threshold', async () => {
     const product = await createProduct({ stockQuantity: 6, lowStockThreshold: 4 });
-    await order(customer.agent, [{ productId: product.id, quantity: 1 }]); // 5 — still above
+    await order(customer.agent, [{ productId: product.id, size: 'M', quantity: 1 }]); // 5 — still above
     expect(
       emailsTo(admin.email).filter((m) => m.subject.startsWith('Low stock alert')),
     ).toHaveLength(0);
-    await order(customer.agent, [{ productId: product.id, quantity: 1 }]); // 4 — crosses
-    await order(customer.agent, [{ productId: product.id, quantity: 1 }]); // 3 — already low
+    await order(customer.agent, [{ productId: product.id, size: 'M', quantity: 1 }]); // 4 — crosses
+    await order(customer.agent, [{ productId: product.id, size: 'M', quantity: 1 }]); // 3 — already low
     const alerts = emailsTo(admin.email).filter((m) => m.subject.startsWith('Low stock alert'));
     expect(alerts).toHaveLength(1);
     expect(alerts[0]!.text).toContain(product.sku);
@@ -188,9 +203,9 @@ describe('placing orders', () => {
 describe('viewing orders', () => {
   it("lists only the customer's own orders and hides others' with 404", async () => {
     const p = await createProduct();
-    const mine = await order(customer.agent, [{ productId: p.id, quantity: 1 }]);
+    const mine = await order(customer.agent, [{ productId: p.id, size: 'M', quantity: 1 }]);
     const other = await loggedInUser(server);
-    const theirs = await order(other.agent, [{ productId: p.id, quantity: 1 }]);
+    const theirs = await order(other.agent, [{ productId: p.id, size: 'M', quantity: 1 }]);
 
     const list = await customer.agent.get('/api/orders');
     expect(list.body.data.map((o: { id: string }) => o.id)).toEqual([mine.body.data.id]);
@@ -205,7 +220,7 @@ describe('viewing orders', () => {
 describe('cancellation', () => {
   it('lets a customer cancel a PENDING order and restores stock', async () => {
     const p = await createProduct({ stockQuantity: 5 });
-    const placed = await order(customer.agent, [{ productId: p.id, quantity: 3 }]);
+    const placed = await order(customer.agent, [{ productId: p.id, size: 'M', quantity: 3 }]);
     expect(await stockOf(p.id)).toBe(2);
 
     const cancel = await customer.agent
@@ -232,7 +247,7 @@ describe('cancellation', () => {
 
   it('restores stock exactly once when cancellations race', async () => {
     const p = await createProduct({ stockQuantity: 5 });
-    const placed = await order(customer.agent, [{ productId: p.id, quantity: 2 }]);
+    const placed = await order(customer.agent, [{ productId: p.id, size: 'M', quantity: 2 }]);
     const id = placed.body.data.id as string;
     const results = await Promise.all([
       customer.agent.post(`/api/orders/${id}/cancel`).send({}),
@@ -245,7 +260,7 @@ describe('cancellation', () => {
 
   it('stops customers cancelling once paid, but admins can until shipped', async () => {
     const p = await createProduct({ stockQuantity: 5 });
-    const placed = await order(customer.agent, [{ productId: p.id, quantity: 1 }]);
+    const placed = await order(customer.agent, [{ productId: p.id, size: 'M', quantity: 1 }]);
     const id = placed.body.data.id as string;
 
     expect(
@@ -265,8 +280,8 @@ describe('cancellation', () => {
 
   it('does not allow cancelling a shipped order', async () => {
     const p = await createProduct({ stockQuantity: 5 });
-    const id = (await order(customer.agent, [{ productId: p.id, quantity: 1 }])).body.data
-      .id as string;
+    const id = (await order(customer.agent, [{ productId: p.id, size: 'M', quantity: 1 }])).body
+      .data.id as string;
     for (const status of ['PAID', 'PROCESSING', 'SHIPPED']) {
       expect(
         (await admin.agent.patch(`/api/admin/orders/${id}/status`).send({ status })).status,
@@ -283,8 +298,8 @@ describe('cancellation', () => {
 describe('admin status workflow', () => {
   it('moves through the lifecycle, stamps timestamps, and emails the customer', async () => {
     const p = await createProduct();
-    const id = (await order(customer.agent, [{ productId: p.id, quantity: 1 }])).body.data
-      .id as string;
+    const id = (await order(customer.agent, [{ productId: p.id, size: 'M', quantity: 1 }])).body
+      .data.id as string;
 
     const skip = await admin.agent
       .patch(`/api/admin/orders/${id}/status`)
@@ -317,8 +332,8 @@ describe('payments (mock provider)', () => {
 
   it('marks the order PAID from a signed webhook, idempotently', async () => {
     const p = await createProduct({ priceCents: 2500 });
-    const id = (await order(customer.agent, [{ productId: p.id, quantity: 2 }])).body.data
-      .id as string;
+    const id = (await order(customer.agent, [{ productId: p.id, size: 'M', quantity: 2 }])).body
+      .data.id as string;
     const pay = await customer.agent.post(`/api/orders/${id}/pay`).send({});
     expect(pay.status).toBe(200);
     const { reference } = pay.body.data;
@@ -357,7 +372,7 @@ describe('payment edge cases', () => {
 
   async function pendingOrder(priceCents = 1000) {
     const p = await createProduct({ priceCents, stockQuantity: 5 });
-    const res = await order(customer.agent, [{ productId: p.id, quantity: 1 }]);
+    const res = await order(customer.agent, [{ productId: p.id, size: 'M', quantity: 1 }]);
     return { id: res.body.data.id as string, productId: p.id };
   }
   const startPayment = async (id: string) =>
@@ -429,10 +444,140 @@ describe('payment edge cases', () => {
 describe('admin order filters', () => {
   it('treats a date-only "to" as the end of that day', async () => {
     const p = await createProduct();
-    await order(customer.agent, [{ productId: p.id, quantity: 1 }]);
+    await order(customer.agent, [{ productId: p.id, size: 'M', quantity: 1 }]);
     const today = new Date().toISOString().slice(0, 10);
     const res = await admin.agent.get(`/api/admin/orders?from=${today}&to=${today}`);
     expect(res.status).toBe(200);
     expect(res.body.pagination.total).toBe(1);
+  });
+});
+
+describe('per-size stock', () => {
+  it('deducts only the ordered size and names the size when it runs out', async () => {
+    const p = await createProduct({ sizes: { M: 1, L: 5 }, name: 'Sized Jersey' });
+    const tooMany = await order(customer.agent, [{ productId: p.id, size: 'M', quantity: 2 }]);
+    expect(tooMany.status).toBe(409);
+    expect(tooMany.body.error).toMatchObject({
+      code: 'INSUFFICIENT_STOCK',
+      details: { size: 'M', requested: 2, available: 1 },
+    });
+    expect(tooMany.body.error.message).toContain('size M');
+
+    const ok = await order(customer.agent, [{ productId: p.id, size: 'L', quantity: 2 }]);
+    expect(ok.status).toBe(201);
+    expect(ok.body.data.items[0]).toMatchObject({ size: 'L', quantity: 2, customization: null });
+    expect(await stockOf(p.id, 'L')).toBe(3);
+    expect(await stockOf(p.id, 'M')).toBe(1); // the other size is untouched
+    const movement = await prisma.inventoryMovement.findFirstOrThrow({
+      where: { orderId: ok.body.data.id },
+      include: { variant: true },
+    });
+    expect([movement.variant.size, movement.change, movement.stockAfter]).toEqual(['L', -2, 3]);
+  });
+
+  it('rejects a size the product is not sold in', async () => {
+    const p = await createProduct({ sizes: { M: 5 } });
+    const res = await order(customer.agent, [{ productId: p.id, size: 'XL', quantity: 1 }]);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('SIZE_UNAVAILABLE');
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it('never oversells one size under concurrency while another size stays untouched', async () => {
+    const p = await createProduct({ sizes: { M: 6, L: 50 }, lowStockThreshold: 0 });
+    const results = await Promise.all(
+      Array.from({ length: 25 }, () =>
+        order(customer.agent, [{ productId: p.id, size: 'M', quantity: 1 }]),
+      ),
+    );
+    expect(results.filter((r) => r.status === 201)).toHaveLength(6);
+    expect(results.filter((r) => r.status === 409)).toHaveLength(19);
+    expect(await stockOf(p.id, 'M')).toBe(0);
+    expect(await stockOf(p.id, 'L')).toBe(50);
+  });
+
+  it('restores the same size when an order is cancelled', async () => {
+    const p = await createProduct({ sizes: { M: 5, XL: 5 } });
+    const placed = await order(customer.agent, [{ productId: p.id, size: 'XL', quantity: 3 }]);
+    expect(await stockOf(p.id, 'XL')).toBe(2);
+    expect(
+      (await customer.agent.post(`/api/orders/${placed.body.data.id}/cancel`).send({})).status,
+    ).toBe(200);
+    expect(await stockOf(p.id, 'XL')).toBe(5);
+    expect(await stockOf(p.id, 'M')).toBe(5);
+  });
+
+  it('treats the same shirt in two sizes as two lines, and merges true duplicates', async () => {
+    const p = await createProduct({ sizes: { M: 10, L: 10 } });
+    const res = await order(customer.agent, [
+      { productId: p.id, size: 'M', quantity: 1 },
+      { productId: p.id, size: 'L', quantity: 1 },
+      { productId: p.id, size: 'M', quantity: 2 },
+    ]);
+    expect(res.status).toBe(201);
+    expect(
+      res.body.data.items
+        .map((i: { size: string; quantity: number }) => [i.size, i.quantity])
+        .sort(),
+    ).toEqual([
+      ['L', 1],
+      ['M', 3],
+    ]);
+  });
+});
+
+describe('name & number personalisation', () => {
+  it('prices the print on the server, upper-cases the name and snapshots it on the order', async () => {
+    const p = await createProduct({
+      sizes: { M: 5 },
+      priceCents: 8900,
+      printPriceCents: 1500,
+      isCustomizable: true,
+    });
+    const res = await order(customer.agent, [
+      { productId: p.id, size: 'M', quantity: 2, customization: { name: 'ray', number: '10' } },
+    ]);
+    expect(res.status).toBe(201);
+    expect(res.body.data.items[0]).toMatchObject({
+      unitPriceCents: 10400,
+      lineTotalCents: 20800,
+      customization: { name: 'RAY', number: '10' },
+    });
+    expect(res.body.data.totalCents).toBe(20800);
+
+    // Same shirt, plain and personalised, are separate lines at different prices.
+    const mixed = await order(customer.agent, [
+      { productId: p.id, size: 'M', quantity: 1 },
+      { productId: p.id, size: 'M', quantity: 1, customization: { number: '7' } },
+    ]);
+    expect(mixed.body.data.totalCents).toBe(8900 + 10400);
+    expect(mixed.body.data.items).toHaveLength(2);
+    expect(emailsTo(customer.email).some((m) => m.text.includes('Print: RAY 10'))).toBe(true);
+  });
+
+  it('rejects personalising a product that does not allow it, and invalid prints', async () => {
+    const plain = await createProduct({ sizes: { M: 5 } });
+    const notAllowed = await order(customer.agent, [
+      { productId: plain.id, size: 'M', quantity: 1, customization: { name: 'RAY' } },
+    ]);
+    expect(notAllowed.status).toBe(400);
+    expect(notAllowed.body.error.code).toBe('NOT_CUSTOMIZABLE');
+    expect(await stockOf(plain.id)).toBe(5);
+
+    const custom = await createProduct({ sizes: { M: 5 }, isCustomizable: true });
+    for (const customization of [
+      {},
+      { name: '' },
+      { name: 'WAY TOO LONG NAME' },
+      { name: 'R4Y' },
+      { number: '123' },
+      { number: 'ab' },
+    ]) {
+      const res = await order(customer.agent, [
+        { productId: custom.id, size: 'M', quantity: 1, customization },
+      ]);
+      expect(res.status, JSON.stringify(customization)).toBe(400);
+    }
+    expect(await stockOf(custom.id)).toBe(5);
   });
 });

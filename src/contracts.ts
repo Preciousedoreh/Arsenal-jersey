@@ -14,3 +14,4 @@ export * from './modules/users/users.schemas.js';
 export interface ApiErrorBody {
   error: { code: string; message: string; details?: unknown };
 }
+export * from './modules/categories/categories.schemas.js';

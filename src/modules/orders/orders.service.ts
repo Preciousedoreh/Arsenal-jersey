@@ -1,4 +1,5 @@
 import { Prisma, type OrderStatus } from '@prisma/client';
+import type { Size } from '../products/products.schemas.js';
 import { logger } from '../../config/logger.js';
 import { alertIfLowStock, type StockChange } from '../../jobs/lowStock.js';
 import { prisma } from '../../lib/prisma.js';
@@ -55,6 +56,8 @@ export function toOrderDto(o: OrderWithRelations): OrderDto {
       productId: i.productId,
       productName: i.productName,
       productSku: i.productSku,
+      size: i.size,
+      customization: (i.customization as { name: string; number: string } | null) ?? null,
       unitPriceCents: i.unitPriceCents,
       quantity: i.quantity,
       lineTotalCents: i.lineTotalCents,
@@ -66,16 +69,27 @@ export function toAdminOrderDto(o: OrderWithRelations): AdminOrderDto {
   return { ...toOrderDto(o), paymentReference: o.paymentReference, customer: o.user };
 }
 
-/** Merge duplicate lines and sort by productId so concurrent orders lock rows in the same order (no deadlocks). */
-function normaliseItems(
-  items: CreateOrderInput['items'],
-): { productId: string; quantity: number }[] {
-  const merged = new Map<string, number>();
-  for (const { productId, quantity } of items)
-    merged.set(productId, (merged.get(productId) ?? 0) + quantity);
-  return [...merged]
-    .map(([productId, quantity]) => ({ productId, quantity }))
-    .sort((a, b) => a.productId.localeCompare(b.productId));
+interface Line {
+  productId: string;
+  size: Size;
+  quantity: number;
+  customization: { name: string; number: string } | null;
+}
+
+/**
+ * Merge duplicate lines (same product, size and print) and sort them so concurrent orders take
+ * their row locks in the same order (no deadlocks).
+ */
+function normaliseItems(items: CreateOrderInput['items']): Line[] {
+  const merged = new Map<string, Line>();
+  for (const item of items) {
+    const customization = item.customization ? { name: item.customization.name, number: item.customization.number } : null;
+    const key = [item.productId, item.size, customization?.name ?? '', customization?.number ?? ''].join('|');
+    const existing = merged.get(key);
+    if (existing) existing.quantity += item.quantity;
+    else merged.set(key, { productId: item.productId, size: item.size, quantity: item.quantity, customization });
+  }
+  return [...merged.values()].sort((a, b) => (a.productId + a.size).localeCompare(b.productId + b.size));
 }
 
 const TX_OPTIONS = {
@@ -108,91 +122,90 @@ async function refundPayment(reference: string, amountCents: number, orderId: st
 export const orderService = {
   /**
    * Places an order and deducts stock in ONE transaction:
-   *  - each product's stock is decremented with a conditional atomic UPDATE
+   *  - each size's stock is decremented with a conditional atomic UPDATE
    *    (`... SET stock = stock - qty WHERE id = ? AND stock >= qty`); Postgres re-checks the
    *    condition after waiting on a concurrent writer's row lock, so stock can never oversell;
    *  - if any line can't be fulfilled, the whole transaction rolls back (409 INSUFFICIENT_STOCK);
-   *  - order rows store a price/name snapshot; inventory movements are logged with reason ORDER.
+   *  - prices are computed here from the catalogue (never trusted from the client), including the
+   *    name & number print surcharge; order rows store a name/size/price snapshot;
+   *  - inventory movements are logged per size with reason ORDER.
    */
   async create(
     customer: { id: string; email: string; name: string },
     input: CreateOrderInput,
   ): Promise<OrderDto> {
     const lines = normaliseItems(input.items);
-    const ids = lines.map((l) => l.productId);
+    const productIds = [...new Set(lines.map((l) => l.productId))];
 
     const { order, stockChanges } = await prisma.$transaction(async (tx) => {
       const products = new Map(
-        (await tx.product.findMany({ where: { id: { in: ids } } })).map((p) => [p.id, p]),
+        (await tx.product.findMany({ where: { id: { in: productIds } }, include: { variants: true } })).map((p) => [p.id, p]),
       );
 
-      for (const line of lines) {
+      const resolved = lines.map((line) => {
         const p = products.get(line.productId);
-        if (!p || p.deletedAt)
-          throw new NotFoundError(`Product ${line.productId}`, 'PRODUCT_NOT_FOUND');
-        if (!p.isActive)
-          throw new ConflictError(
-            `"${p.name}" is not available for purchase`,
-            'PRODUCT_UNAVAILABLE',
-            { productId: p.id },
-          );
-      }
-      const currencies = new Set([...products.values()].map((p) => p.currency));
-      if (currencies.size > 1)
-        throw new BadRequestError(
-          'All items in an order must use the same currency',
-          'MIXED_CURRENCY',
-        );
+        if (!p || p.deletedAt) throw new NotFoundError(`Product ${line.productId}`, 'PRODUCT_NOT_FOUND');
+        if (!p.isActive) {
+          throw new ConflictError(`"${p.name}" is not available for purchase`, 'PRODUCT_UNAVAILABLE', { productId: p.id });
+        }
+        const variant = p.variants.find((v) => v.size === line.size);
+        if (!variant) {
+          throw new ConflictError(`"${p.name}" is not sold in size ${line.size}`, 'SIZE_UNAVAILABLE', { productId: p.id, size: line.size });
+        }
+        if (line.customization && !p.isCustomizable) {
+          throw new BadRequestError(`"${p.name}" cannot be personalised`, 'NOT_CUSTOMIZABLE', { productId: p.id });
+        }
+        return { line, product: p, variant };
+      });
 
-      for (const line of lines) {
-        const { count } = await tx.product.updateMany({
+      const currencies = new Set(resolved.map((r) => r.product.currency));
+      if (currencies.size > 1) throw new BadRequestError('All items in an order must use the same currency', 'MIXED_CURRENCY');
+
+      for (const { line, product, variant } of resolved) {
+        const { count } = await tx.productVariant.updateMany({
           where: {
-            id: line.productId,
-            isActive: true,
-            deletedAt: null,
+            id: variant.id,
             stockQuantity: { gte: line.quantity },
+            product: { isActive: true, deletedAt: null },
           },
           data: { stockQuantity: { decrement: line.quantity } },
         });
         if (count === 0) {
-          const fresh = await tx.product.findUnique({
-            where: { id: line.productId },
-            select: { stockQuantity: true, name: true, isActive: true, deletedAt: true },
+          const fresh = await tx.productVariant.findUnique({
+            where: { id: variant.id },
+            select: { stockQuantity: true, product: { select: { isActive: true, deletedAt: true } } },
           });
-          if (!fresh || !fresh.isActive || fresh.deletedAt) {
-            throw new ConflictError(
-              `"${fresh?.name ?? line.productId}" is not available for purchase`,
-              'PRODUCT_UNAVAILABLE',
-              { productId: line.productId },
-            );
+          if (!fresh || !fresh.product.isActive || fresh.product.deletedAt) {
+            throw new ConflictError(`"${product.name}" is not available for purchase`, 'PRODUCT_UNAVAILABLE', { productId: product.id });
           }
           throw new InsufficientStockError({
-            productId: line.productId,
-            productName: fresh?.name ?? products.get(line.productId)!.name,
+            productId: product.id,
+            productName: product.name,
+            size: line.size,
             requested: line.quantity,
-            available: fresh?.stockQuantity ?? 0,
+            available: fresh.stockQuantity,
           });
         }
       }
 
       const after = new Map(
-        (
-          await tx.product.findMany({
-            where: { id: { in: ids } },
-            select: { id: true, stockQuantity: true },
-          })
-        ).map((p) => [p.id, p.stockQuantity]),
+        (await tx.productVariant.findMany({ where: { id: { in: resolved.map((r) => r.variant.id) } }, select: { id: true, stockQuantity: true } })).map(
+          (v) => [v.id, v.stockQuantity],
+        ),
       );
 
-      const itemRows = lines.map((line) => {
-        const p = products.get(line.productId)!;
+      const itemRows = resolved.map(({ line, product, variant }) => {
+        const unitPriceCents = product.priceCents + (line.customization ? product.printPriceCents : 0);
         return {
-          productId: p.id,
-          productName: p.name,
-          productSku: p.sku,
-          unitPriceCents: p.priceCents,
+          productId: product.id,
+          variantId: variant.id,
+          productName: product.name,
+          productSku: product.sku,
+          size: line.size,
+          customization: line.customization ?? Prisma.JsonNull,
+          unitPriceCents,
           quantity: line.quantity,
-          lineTotalCents: p.priceCents * line.quantity,
+          lineTotalCents: unitPriceCents * line.quantity,
         };
       });
       const subtotalCents = itemRows.reduce((sum, i) => sum + i.lineTotalCents, 0);
@@ -207,32 +220,27 @@ export const orderService = {
           shippingAddress: input.shippingAddress ?? Prisma.JsonNull,
           items: { create: itemRows },
         },
-        include: {
-          items: { orderBy: { id: 'asc' } },
-          user: { select: { id: true, email: true, name: true } },
-        },
+        include: orderInclude,
       });
 
       await tx.inventoryMovement.createMany({
-        data: lines.map((line) => ({
-          productId: line.productId,
+        data: resolved.map(({ line, product, variant }) => ({
+          productId: product.id,
+          variantId: variant.id,
           change: -line.quantity,
-          stockAfter: after.get(line.productId)!,
+          stockAfter: after.get(variant.id)!,
           reason: 'ORDER' as const,
           orderId: created.id,
         })),
       });
 
-      const stockChanges: StockChange[] = lines.map((line) => {
-        const p = products.get(line.productId)!;
-        return {
-          name: p.name,
-          sku: p.sku,
-          stockQuantity: after.get(line.productId)!,
-          lowStockThreshold: p.lowStockThreshold,
-          change: -line.quantity,
-        };
-      });
+      const stockChanges: StockChange[] = resolved.map(({ line, product, variant }) => ({
+        name: `${product.name} (${line.size})`,
+        sku: product.sku,
+        stockQuantity: after.get(variant.id)!,
+        lowStockThreshold: product.lowStockThreshold,
+        change: -line.quantity,
+      }));
 
       return { order: created, stockChanges };
     }, TX_OPTIONS);
@@ -322,19 +330,20 @@ export const orderService = {
 
       const items = await tx.orderItem.findMany({
         where: { orderId },
-        orderBy: { productId: 'asc' },
+        orderBy: { variantId: 'asc' },
       });
       for (const item of items) {
-        const product = await tx.product.update({
-          where: { id: item.productId },
+        const variant = await tx.productVariant.update({
+          where: { id: item.variantId },
           data: { stockQuantity: { increment: item.quantity } },
           select: { stockQuantity: true },
         });
         await tx.inventoryMovement.create({
           data: {
             productId: item.productId,
+            variantId: item.variantId,
             change: item.quantity,
-            stockAfter: product.stockQuantity,
+            stockAfter: variant.stockQuantity,
             reason: 'CANCEL',
             orderId,
             adminId: actor.role === 'ADMIN' ? actor.id : null,

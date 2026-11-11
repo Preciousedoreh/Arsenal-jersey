@@ -29,8 +29,8 @@ model User {
 
   sessions           Session[]
   accounts           Account[]
-  orders             Order[]            @relation("CustomerOrders")
-  cancelledOrders    Order[]            @relation("CancelledBy")
+  orders             Order[]             @relation("CustomerOrders")
+  cancelledOrders    Order[]             @relation("CancelledBy")
   inventoryMovements InventoryMovement[]
 
   @@map("users")
@@ -96,36 +96,101 @@ model LoginLockout {
 
 // ─────────────────────────────── Catalogue & inventory ───────────────────────────────
 
-enum ProductCategory {
-  JERSEY
-  MERCHANDISE
+enum ProductBadge {
+  NEW
+  LIMITED
+}
+
+/// Shirt sizes. Stock is tracked per size (see ProductVariant).
+enum Size {
+  S
+  M
+  L
+  XL
+  XXL
+  /// One size — for non-apparel items such as scarves and mugs.
+  OS
+}
+
+model Category {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String   @default("")
+  imageUrl    String?
+  /// Lower numbers first.
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  products Product[]
+
+  @@map("categories")
 }
 
 model Product {
-  id                String          @id @default(cuid())
+  id                String        @id @default(cuid())
   name              String
-  slug              String          @unique
-  description       String          @default("")
-  category          ProductCategory
+  slug              String        @unique
+  subtitle          String?
+  description       String        @default("")
+  categoryId        String
+  category          Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   priceCents        Int
-  currency          String          @db.Char(3)
-  sku               String          @unique
-  images            String[]        @default([])
-  /// Guarded by a CHECK (stockQuantity >= 0) constraint in the migration.
-  stockQuantity     Int             @default(0)
-  lowStockThreshold Int             @default(5)
-  isActive          Boolean         @default(true)
+  currency          String        @db.Char(3)
+  sku               String        @unique
+  /// Ordered gallery URLs: [front, back, detail, ...].
+  images            String[]      @default([])
+  features          String[]      @default([])
+  /// [{ label, value }] rows shown under "Details & care".
+  specs             Json          @default("[]")
+  tags              String[]      @default([])
+  badge             ProductBadge?
+  isFeatured        Boolean       @default(false)
+  isBestSeller      Boolean       @default(false)
+  /// Name & number printing offered for this product.
+  isCustomizable    Boolean       @default(false)
+  printPriceCents   Int           @default(1500)
+  /// CSS colour (#RRGGBB) of the printed lettering, for the live preview.
+  printColor        String?
+  colorName         String?
+  colorHex          String?
+  /// Display-only placeholders until a reviews module exists. Not editable through the admin API.
+  rating            Float?
+  reviewCount       Int           @default(0)
+  /// Alert admins when any size of this product drops to or below this many units.
+  lowStockThreshold Int           @default(5)
+  isActive          Boolean       @default(true)
   /// Set when a product that has orders is "deleted" (soft delete).
   deletedAt         DateTime?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  variants   ProductVariant[]
+  orderItems OrderItem[]
+  movements  InventoryMovement[]
+
+  @@index([categoryId, isActive])
+  @@index([name])
+  @@map("products")
+}
+
+/// One row per size of a product. Stock lives here and is guarded by a CHECK (stockQuantity >= 0).
+model ProductVariant {
+  id            String   @id @default(cuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  size          Size
+  stockQuantity Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   orderItems OrderItem[]
   movements  InventoryMovement[]
 
-  @@index([category, isActive])
-  @@index([name])
-  @@map("products")
+  @@unique([productId, size])
+  @@map("product_variants")
 }
 
 enum InventoryReason {
@@ -135,11 +200,13 @@ enum InventoryReason {
   ADJUSTMENT
 }
 
-/// Append-only audit log of every stock change.
+/// Append-only audit log of every stock change (per size).
 model InventoryMovement {
   id         String          @id @default(cuid())
   productId  String
   product    Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId  String
+  variant    ProductVariant  @relation(fields: [variantId], references: [id], onDelete: Cascade)
   change     Int
   stockAfter Int
   reason     InventoryReason
@@ -151,6 +218,7 @@ model InventoryMovement {
   createdAt  DateTime        @default(now())
 
   @@index([productId, createdAt])
+  @@index([variantId, createdAt])
   @@index([orderId])
   @@map("inventory_movements")
 }
@@ -224,18 +292,24 @@ model Payment {
 
 /// Line item with a snapshot of the product's name/sku/price at purchase time.
 model OrderItem {
-  id             String  @id @default(cuid())
+  id             String         @id @default(cuid())
   orderId        String
-  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order          Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
   productId      String
-  product        Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId      String
+  variant        ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
   productName    String
   productSku     String
+  size           Size
+  /// { name, number } printed on the shirt, if personalised.
+  customization  Json?
   unitPriceCents Int
   quantity       Int
   lineTotalCents Int
 
   @@index([orderId])
   @@index([productId])
+  @@index([variantId])
   @@map("order_items")
 }

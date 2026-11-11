@@ -17,6 +17,7 @@ import {
   writableQuery,
 } from './middleware/security.js';
 import { paymentWebhook } from './modules/payments/payments.controller.js';
+import { uploadDir } from './services/storage/storage.service.js';
 import { apiRouter } from './routes.js';
 import { docsRouter } from './docs/docs.routes.js';
 
@@ -64,6 +65,20 @@ export function createApp(): Express {
       maxAge: 600,
     }),
   );
+  // Uploaded product photos. Only image files we generated names for are ever stored here. Helmet's
+  // default `Cross-Origin-Resource-Policy: same-origin` would stop the storefront (another origin)
+  // from showing them, so this path alone allows cross-origin loads.
+  app.use(
+    '/uploads',
+    express.static(uploadDir, {
+      index: false,
+      dotfiles: 'ignore',
+      maxAge: '30d',
+      immutable: true, // file names are random and never reused
+      setHeaders: (res) => res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'),
+    }),
+  );
+
   app.use(forwardClientIp);
   app.use('/api', apiRateLimiter);
 

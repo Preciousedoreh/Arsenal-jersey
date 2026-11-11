@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 440" width="800" height="880">
+  <defs>
+    <clipPath id="clip13"><path d="M155 30 Q200 64 245 30 L288 41 L300 46 L372 122 L334 164 L296 138 L294 404 Q200 420 106 404 L104 138 L66 164 L28 122 L100 46 L112 41 Z"/></clipPath>
+    <linearGradient id="shade14" x1="0" x2="1">
+      <stop offset="0" stop-color="#000" stop-opacity=".28"/><stop offset=".22" stop-color="#000" stop-opacity=".04"/>
+      <stop offset=".38" stop-color="#fff" stop-opacity=".16"/><stop offset=".62" stop-color="#000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".3"/>
+    </linearGradient>
+    <linearGradient id="sheen15" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".12"/><stop offset="1" stop-color="#000" stop-opacity=".18"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="200" cy="424" rx="150" ry="10" fill="#000" opacity=".12"/>
+  <path d="M155 30 Q200 64 245 30 L288 41 L300 46 L372 122 L334 164 L296 138 L294 404 Q200 420 106 404 L104 138 L66 164 L28 122 L100 46 L112 41 Z" fill="#A80005"/>
+  <g clip-path="url(#clip13)">
+    <path d="M90 300 L330 60 L360 90 L120 330 Z" fill="#0E0C0D" opacity=".9"/>
+    <path d="M288 41 L300 46 L372 122 L334 164 L296 138 Q298 88 288 41 Z" fill="#0E0C0D"/><path d="M112 41 L100 46 L28 122 L66 164 L104 138 Q102 88 112 41 Z" fill="#0E0C0D"/>
+    <path d="M362 111 L324 153" stroke="#FFFFFF" stroke-width="9"/><path d="M38 111 L76 153" stroke="#FFFFFF" stroke-width="9"/>
+    <path d="M296 138 Q298 88 288 41" stroke="#0E0C0D" stroke-width="2.5" fill="none"/><path d="M104 138 Q102 88 112 41" stroke="#0E0C0D" stroke-width="2.5" fill="none"/>
+    <path d="M106 398 Q200 414 294 398" stroke="#FFFFFF" stroke-width="6" fill="none" opacity=".9"/>
+    <path d="M150 190 q24 70 -4 170 M250 210 q-18 60 6 150 M200 300 q10 40 -6 90" stroke="#000" stroke-width="10" fill="none" opacity=".06" stroke-linecap="round"/>
+    <rect width="400" height="440" fill="url(#shade14)"/><rect width="400" height="440" fill="url(#sheen15)"/>
+  </g>
+  <path d="M155 30 Q200 64 245 30" stroke="#FFFFFF" stroke-width="10" fill="none" stroke-linecap="round"/>
+  <path d="M155 30 Q200 64 245 30" stroke="#0E0C0D" stroke-width="2.5" fill="none" transform="translate(0 6)" opacity=".9"/>
+  <g transform="translate(234 96)"><path d="M0 0 H26 V13 Q26 26 13 33 Q0 26 0 13 Z" fill="#FFFFFF"/><path d="M0 0 H26 V13 Q26 26 13 33 Q0 26 0 13 Z" transform="translate(4 4) scale(.69)" fill="none" stroke="#A80005" stroke-width="2"/></g>
+       <path d="M144 106 l9 9 l14 -16" stroke="#FFFFFF" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>

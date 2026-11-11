@@ -3,3 +3,6 @@ dist
 coverage
 prisma/migrations
 package-lock.json
+frontend
+uploads
+uploads-test

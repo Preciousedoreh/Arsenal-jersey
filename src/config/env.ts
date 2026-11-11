@@ -77,6 +77,12 @@ const envSchema = z
     PAYMENT_PROVIDER: z.enum(['mock']).default('mock'),
     PAYMENT_WEBHOOK_SECRET: z.string().min(16),
 
+    // Product photo uploads. "local" stores files on this server's disk (fine for development and a single
+    // server); implement StorageService for S3 / Cloudflare R2 / Cloudinary before running several servers.
+    STORAGE_DRIVER: z.enum(['local']).default('local'),
+    UPLOAD_DIR: z.string().min(1).default('uploads'),
+    MAX_UPLOAD_MB: z.coerce.number().positive().max(25).default(5),
+
     API_DOCS_ENABLED: bool.default(true),
   })
   .superRefine((env, ctx) => {

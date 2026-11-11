@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { paginationQuery } from '../../utils/pagination.js';
+import { sizeSchema, type Size } from '../products/products.schemas.js';
 
 export const orderStatusSchema = z.enum([
   'PENDING',
@@ -27,9 +28,25 @@ export const shippingAddressSchema = z.strictObject({
 });
 export type ShippingAddress = z.infer<typeof shippingAddressSchema>;
 
+/** Name & number printed on a shirt (only for products that offer personalisation). */
+export const customizationSchema = z
+  .strictObject({
+    name: z
+      .string()
+      .trim()
+      .max(12)
+      .regex(/^[\p{L} .'-]*$/u, 'Letters, spaces, apostrophes, dots and hyphens only')
+      .transform((v) => v.toUpperCase())
+      .default(''),
+    number: z.string().regex(/^\d{0,2}$/, 'Up to two digits').default(''),
+  })
+  .refine((c) => c.name !== '' || c.number !== '', 'Provide a name, a number, or both');
+
 export const orderItemInput = z.strictObject({
   productId: z.string().min(1).max(64),
+  size: sizeSchema,
   quantity: z.number().int().min(1).max(100),
+  customization: customizationSchema.optional(),
 });
 
 export const createOrderBody = z.strictObject({
@@ -85,6 +102,8 @@ export interface OrderItemDto {
   productId: string;
   productName: string;
   productSku: string;
+  size: Size;
+  customization: { name: string; number: string } | null;
   unitPriceCents: number;
   quantity: number;
   lineTotalCents: number;

@@ -3,8 +3,8 @@
 Backend for an online store selling **jerseys** and **merchandise**. Node.js + TypeScript (strict), Express 5, PostgreSQL/Prisma, Better Auth, BullMQ/Redis, Zod.
 
 - Email + password auth with email verification, password reset, session cookies, rate limiting, and account lockout
-- Product catalogue and admin inventory management with a full stock audit log
-- Orders that **deduct stock atomically and never oversell**, with automatic restock on cancellation
+- Product catalogue with **categories**, rich product details, **photo uploads**, and **stock tracked per size**, with a full stock audit log
+- Orders (per size, with optional name & number printing) that **deduct stock atomically and never oversell**, with automatic restock on cancellation
 - Queued, templated email notifications
 - OpenAPI docs at `/api/docs`
 
@@ -19,7 +19,7 @@ npm install                 # also runs `prisma generate`
 cp .env.example .env        # then set BETTER_AUTH_SECRET (see below)
 docker compose up -d        # Postgres (host port 5433), Redis (6379), Mailpit (1025 / UI 8025)
 npm run db:migrate          # apply migrations
-npm run db:seed             # admin user + sample jerseys & merch
+npm run db:seed             # admin user, 6 categories and a starter catalogue (7 kits with per-size stock)
 npm run dev                 # http://localhost:4000  (docs: http://localhost:4000/api/docs)
 ```
 
@@ -58,7 +58,7 @@ npm test
 
 Tests use a separate database, `jersey_store_test`, which the Postgres container creates on first start. Settings come from `.env.test`. Migrations are applied automatically, and each test starts from truncated tables. The test helpers refuse to run against any database whose name doesn't end in `_test`. Emails go to an in-memory outbox, and jobs run inline, so tests don't need Mailpit.
 
-What's covered (51 tests):
+What's covered (70 tests, including categories, photo uploads, per-size stock and personalisation):
 
 - **Auth:** register → verification email → unverified users can't order → verify → login; role can't be self-assigned; password policy; reset (generic response, single-use token, sessions revoked); change password; logout of all devices; session token never in JSON responses
 - **Rate limiting / lockout:** 6th login attempt for the same IP + email → `429` with `Retry-After`; distributed failures → account locked plus an email to the owner
@@ -103,6 +103,9 @@ All variables are validated with Zod at startup ([src/config/env.ts](src/config/
 | `RUN_WORKERS_IN_PROCESS`                                              | `true`                   | Run the email worker inside the API process                                                                                               |
 | `PAYMENT_PROVIDER`                                                    | `mock`                   | Only `mock` is implemented so far                                                                                                         |
 | `PAYMENT_WEBHOOK_SECRET`                                              | —                        | HMAC secret for the mock provider's webhook signatures                                                                                    |
+| `STORAGE_DRIVER`                                                      | `local`                  | Where uploaded photos are stored. Only `local` (this server's disk) is implemented                                                        |
+| `UPLOAD_DIR`                                                          | `uploads`                | Folder for uploaded photos (served at `/uploads/*`). Keep it on a persistent disk                                                         |
+| `MAX_UPLOAD_MB`                                                       | `5`                      | Largest accepted photo                                                                                                                    |
 | `API_DOCS_ENABLED`                                                    | `true`                   | Serve Swagger UI at `/api/docs`                                                                                                           |
 
 ---
@@ -136,13 +139,14 @@ Full interactive docs: **`/api/docs`**. Raw spec: **`/api/docs/openapi.json`**.
 | POST        | `/api/auth/revoke-sessions`                         | Log out of all devices                                                                                            |
 | GET / PATCH | `/api/me`                                           | Current user + role / update name and avatar                                                                      |
 
-**Catalogue:** `GET /api/products?category=JERSEY|MERCHANDISE&search=&page=`, `GET /api/products/:slug`
+**Catalogue** (public): `GET /api/categories` (active categories with product counts), `GET /api/products?category=<slug>&search=&badge=NEW|LIMITED&featured=true&bestSeller=true&page=&pageSize=`, `GET /api/products/:slug`.
+A product includes its category, `priceCents`, ordered `images`, `features`, `specs`, `tags`, `badge`, `isCustomizable` / `printPriceCents` / `printColor`, and `sizes: [{ size, stockQuantity, inStock }]` (sizes are `S M L XL XXL` or `OS` for one-size items). Products in hidden categories are not returned.
 
 **Orders** (signed in; placing and paying require a verified email)
 
 | Method | Path                              | Notes                                                            |
 | ------ | --------------------------------- | ---------------------------------------------------------------- |
-| POST   | `/api/orders`                     | `{ items: [{ productId, quantity }], shippingAddress? }`         |
+| POST   | `/api/orders`                     | `{ items: [{ productId, size, quantity, customization?: { name?, number? } }], shippingAddress? }`. Prices (including the print surcharge) are computed server-side |
 | GET    | `/api/orders`, `/api/orders/:id`  | Your own orders only (others' orders return `404`)               |
 | POST   | `/api/orders/:id/cancel`          | Only while `PENDING`; restores stock                             |
 | POST   | `/api/orders/:id/pay`             | Starts a payment; returns `{ provider, reference, checkoutUrl }` |
@@ -152,11 +156,14 @@ Full interactive docs: **`/api/docs`**. Raw spec: **`/api/docs/openapi.json`**.
 
 | Method               | Path                                         | Notes                                                                                   |
 | -------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------- |
-| GET / POST           | `/api/admin/products`                        | List all (`?status=active\|inactive\|deleted\|all`) / create                            |
-| GET / PATCH / DELETE | `/api/admin/products/:id`                    | DELETE soft-deletes products that have orders and hard-deletes the rest                 |
-| POST                 | `/api/admin/products/:id/stock`              | `{ change: 50 }` or `{ set: 120 }`, plus optional `reason: RESTOCK\|ADJUSTMENT`, `note` |
-| GET                  | `/api/admin/inventory`                       | Stock per product, low-stock flags, units sold, summary (`?lowStockOnly=true`)          |
-| GET                  | `/api/admin/inventory/movements`             | Audit log (`?productId=&reason=`)                                                       |
+| GET / POST           | `/api/admin/categories`                      | List all categories (including hidden) / create (`{ name, slug?, description?, imageUrl?, sortOrder?, isActive? }`) |
+| PATCH / DELETE       | `/api/admin/categories/:id`                  | Edit or hide / delete (`409` while any product belongs to it)                           |
+| POST                 | `/api/admin/uploads`                         | Upload a product photo: `multipart/form-data`, one image in the `file` field. Returns `{ url }` to put in a product's `images` |
+| GET / POST           | `/api/admin/products`                        | List all (`?status=active\|inactive\|deleted\|all`) / create, with `categoryId` and `sizes: [{ size, stockQuantity }]` |
+| GET / PATCH / DELETE | `/api/admin/products/:id`                    | PATCH changes only the fields sent (never stock). DELETE soft-deletes products that have orders and hard-deletes the rest |
+| POST                 | `/api/admin/products/:id/stock`              | `{ size, change: 50 }` or `{ size, set: 120 }`, plus optional `reason: RESTOCK\|ADJUSTMENT`, `note`. Creates the size if the product doesn't have it yet |
+| GET                  | `/api/admin/inventory`                       | One row per product **size**: stock, low-stock flag, units sold, plus a summary (`?lowStockOnly=true&categoryId=`) |
+| GET                  | `/api/admin/inventory/movements`             | Audit log (`?productId=&size=&reason=`)                                                 |
 | GET                  | `/api/admin/orders`, `/api/admin/orders/:id` | Filter by `status`, `from`, `to`, `userId`                                              |
 | PATCH                | `/api/admin/orders/:id/status`               | `{ status, note? }`                                                                     |
 | GET                  | `/api/admin/users`                           | Filter by `role` and `search`                                                           |
@@ -174,16 +181,23 @@ Full interactive docs: **`/api/docs`**. Raw spec: **`/api/docs/openapi.json`**.
 
 [orders.service.ts](src/modules/orders/orders.service.ts) places an order in **one** transaction:
 
-1. Load the products and check each is active and that all share one currency.
-2. For each line, sorted by product id so concurrent orders lock rows in the same order (no deadlocks), run a conditional atomic update:
-   `UPDATE products SET stockQuantity = stockQuantity - :qty WHERE id = :id AND stockQuantity >= :qty AND isActive`.
-   Postgres re-evaluates the `WHERE` after waiting on a concurrent writer's row lock. A line that can't be filled updates 0 rows, which throws `409 INSUFFICIENT_STOCK` and rolls back the whole transaction.
-3. Create the `Order` and `OrderItem`s with a **name/SKU/price snapshot**.
-4. Write `InventoryMovement` rows (`reason: ORDER`, `stockAfter`).
+1. Load the products with their sizes; check each is active, the size is sold, any name & number print is allowed for that product, and all share one currency.
+2. For each line (merged per product + size + print, and sorted so concurrent orders lock rows in the same order — no deadlocks), run a conditional atomic update on **that size's** stock:
+   `UPDATE product_variants SET stockQuantity = stockQuantity - :qty WHERE id = :id AND stockQuantity >= :qty AND <product is active>`.
+   Postgres re-evaluates the `WHERE` after waiting on a concurrent writer's row lock. A line that can't be filled updates 0 rows, which throws `409 INSUFFICIENT_STOCK` (naming the size) and rolls back the whole transaction.
+3. Create the `Order` and `OrderItem`s with a **name/SKU/size/print/price snapshot**. The unit price is `priceCents`, plus `printPriceCents` when personalised — computed here, never taken from the client.
+4. Write `InventoryMovement` rows per size (`reason: ORDER`, `stockAfter`).
 
-A database `CHECK (stockQuantity >= 0)` constraint backs this up. Emails are queued only **after** commit.
+A database `CHECK (stockQuantity >= 0)` constraint on `product_variants` backs this up. Emails are queued only **after** commit.
 
 Cancellation uses a conditional status update (`WHERE status IN (...)`), so stock is restored exactly once even when two cancellations race.
+
+### Managing the catalogue: categories, photos, sizes
+
+- **Categories** are rows, not a fixed list: an admin creates, renames, reorders, hides and deletes them (`/api/admin/categories`). A category can't be deleted while products are filed under it.
+- **Sizes and stock:** each product has one `ProductVariant` row per size, and all stock lives there. Opening stock is set when the product is created; after that it only changes through the audited stock endpoint (or orders and cancellations). A size can't be removed once created; set its stock to 0 to mark it sold out.
+- **Photo uploads** (`POST /api/admin/uploads`): the file is identified by its **content** (JPEG, PNG or WebP; SVG is refused because it can carry scripts), limited to `MAX_UPLOAD_MB`, renamed to a random UUID, and served from `/uploads/*` with cross-origin loading allowed so the storefront can show it. Storage sits behind the `StorageService` interface ([storage.service.ts](src/services/storage/storage.service.ts)); the bundled implementation writes to disk. **Before running more than one server, or on a host with disposable disks, implement `StorageService` for S3, Cloudflare R2 or Cloudinary** — those are paid services, so they are not wired in. Photos removed from a product are not deleted from storage yet.
+- The `rating` / `reviewCount` fields are display placeholders (there is no reviews module yet) and are not editable through the admin API.
 
 ### Auth hardening
 
@@ -233,11 +247,13 @@ src/
   middleware/    auth.ts (requireAuth/requireVerified/requireRole), validate.ts, rateLimit.ts, security.ts, error.ts
   modules/
     products/    *.routes.ts → *.controller.ts → *.service.ts → *.repository.ts, *.schemas.ts
-    inventory/   stock adjustments, dashboard, audit log
+    categories/  public list + admin management
+    uploads/     admin photo upload (multer, content sniffing)
+    inventory/   per-size stock adjustments, dashboard, audit log
     orders/      transactional ordering, cancellation, status workflow
     users/       /me and admin user management
     payments/    webhook controller
-  services/      email/ (interface, nodemailer impl, templates), payment/ (interface + mock), notifications.ts
+  services/      email/ (interface, nodemailer impl, templates), payment/ (interface + mock), storage/ (interface + local disk), notifications.ts
   jobs/          email.worker.ts, lowStock.ts
   docs/          OpenAPI generation + Swagger UI
   contracts.ts   every zod schema + response type, for the frontend

@@ -6,6 +6,7 @@ import { prisma } from '../src/lib/prisma.js';
 import {
   client,
   createProduct,
+  stockOf,
   createUser,
   emailsTo,
   linkFromEmail,
@@ -49,7 +50,7 @@ describe('register → verify → login', () => {
     const product = await createProduct();
     const blocked = await agent
       .post('/api/orders')
-      .send({ items: [{ productId: product.id, quantity: 1 }] });
+      .send({ items: [{ productId: product.id, size: 'M', quantity: 1 }] });
     expect(blocked.status).toBe(403);
     expect(blocked.body.error.code).toBe('EMAIL_NOT_VERIFIED');
 
@@ -65,7 +66,7 @@ describe('register → verify → login', () => {
 
     const ordered = await fresh
       .post('/api/orders')
-      .send({ items: [{ productId: product.id, quantity: 1 }] });
+      .send({ items: [{ productId: product.id, size: 'M', quantity: 1 }] });
     expect(ordered.status).toBe(201);
   });
 
@@ -173,13 +174,11 @@ describe('sessions', () => {
 
   it('does not return a session token from change-password', async () => {
     const { agent } = await loggedInUser(server);
-    const res = await agent
-      .post('/api/auth/change-password')
-      .send({
-        currentPassword: PASSWORD,
-        newPassword: 'Changed-Passphrase-66',
-        revokeOtherSessions: true,
-      });
+    const res = await agent.post('/api/auth/change-password').send({
+      currentPassword: PASSWORD,
+      newPassword: 'Changed-Passphrase-66',
+      revokeOtherSessions: true,
+    });
     expect(res.status).toBe(200);
     expect(res.body.token).toBeUndefined();
     expect((await agent.get('/api/me')).status).toBe(200); // cookie was still rotated
@@ -281,12 +280,10 @@ describe('authorization & CSRF', () => {
     const res = await agent
       .post('/api/orders')
       .set('Origin', 'https://evil.example')
-      .send({ items: [{ productId: product.id, quantity: 1 }] });
+      .send({ items: [{ productId: product.id, size: 'M', quantity: 1 }] });
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('CSRF_ORIGIN_REJECTED');
-    expect(
-      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } })).stockQuantity,
-    ).toBe(10);
+    expect(await stockOf(product.id)).toBe(10);
   });
 
   it('lets admins change roles but never their own', async () => {

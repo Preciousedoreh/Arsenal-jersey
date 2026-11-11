@@ -32,15 +32,24 @@ interface OrderLike {
   totalCents: number;
   items: {
     productName: string;
+    size: string;
+    customization: unknown;
     quantity: number;
     unitPriceCents: number;
     lineTotalCents: number;
   }[];
 }
 
+/** "Home 26 · L · Print: RAY 10" — what the customer ordered, as it appears in the email. */
+function describeLine(i: OrderLike['items'][number]): string {
+  const print = i.customization as { name?: string; number?: string } | null;
+  const printText = print ? ` · Print: ${[print.name, print.number].filter(Boolean).join(' ')}` : '';
+  return `${i.productName} · ${i.size === 'OS' ? 'One size' : i.size}${printText}`;
+}
+
 const toLineItems = (order: OrderLike) =>
   order.items.map((i) => ({
-    name: i.productName,
+    name: describeLine(i),
     quantity: i.quantity,
     unitPriceCents: i.unitPriceCents,
     lineTotalCents: i.lineTotalCents,

@@ -40,7 +40,7 @@ export async function resetDb(): Promise<void> {
   if (!/_test\b/.test(process.env.DATABASE_URL ?? ''))
     throw new Error('resetDb() refused: not a test database');
   await prisma.$executeRawUnsafe(`
-    TRUNCATE TABLE "payments", "inventory_movements", "order_items", "orders", "products",
+    TRUNCATE TABLE "payments", "inventory_movements", "order_items", "orders", "product_variants", "products", "categories",
       "sessions", "accounts", "verifications", "login_lockouts", "users" RESTART IDENTITY CASCADE`);
   outbox.clear();
 }
@@ -86,29 +86,79 @@ export async function loggedInUser(server: Server, opts: Parameters<typeof creat
   return { ...user, agent: await signIn(server, user.email) };
 }
 
+export async function createCategory(
+  overrides: Partial<{ name: string; isActive: boolean; slug: string }> = {},
+) {
+  const suffix = randomUUID().slice(0, 8);
+  return prisma.category.create({
+    data: {
+      name: overrides.name ?? `Test Category ${suffix}`,
+      slug: overrides.slug ?? `test-cat-${suffix}`,
+      isActive: overrides.isActive ?? true,
+    },
+  });
+}
+
+/** One shared category per test (created on first use) so simple tests don't have to care about categories. */
+export async function defaultCategory() {
+  return (
+    (await prisma.category.findUnique({ where: { slug: 'test-category' } })) ??
+    prisma.category.create({ data: { name: 'Test Category', slug: 'test-category' } })
+  );
+}
+
+type SizeStock = Partial<Record<'S' | 'M' | 'L' | 'XL' | 'XXL' | 'OS', number>>;
+
+/** Creates a product with per-size stock. `stockQuantity` is shorthand for `sizes: { M: n }` (default 10 in size M). */
 export async function createProduct(
   overrides: Partial<{
     stockQuantity: number;
+    sizes: SizeStock;
     lowStockThreshold: number;
     priceCents: number;
+    printPriceCents: number;
+    isCustomizable: boolean;
     name: string;
     isActive: boolean;
+    categoryId: string;
   }> = {},
 ) {
   const suffix = randomUUID().slice(0, 8);
+  const sizes: SizeStock = overrides.sizes ?? { M: overrides.stockQuantity ?? 10 };
+  const categoryId = overrides.categoryId ?? (await defaultCategory()).id;
   return prisma.product.create({
     data: {
       name: overrides.name ?? `Test Jersey ${suffix}`,
       slug: `test-jersey-${suffix}`,
       sku: `SKU-${suffix}`.toUpperCase(),
-      category: 'JERSEY',
+      categoryId,
       priceCents: overrides.priceCents ?? 5000,
       currency: 'USD',
-      stockQuantity: overrides.stockQuantity ?? 10,
       lowStockThreshold: overrides.lowStockThreshold ?? 2,
       isActive: overrides.isActive ?? true,
+      isCustomizable: overrides.isCustomizable ?? false,
+      printPriceCents: overrides.printPriceCents ?? 1500,
+      variants: {
+        create: Object.entries(sizes).map(([size, stockQuantity]) => ({
+          size: size as 'M',
+          stockQuantity: stockQuantity ?? 0,
+        })),
+      },
     },
+    include: { variants: true },
   });
+}
+
+/** Current stock of one size of a product. */
+export async function stockOf(
+  productId: string,
+  size: 'S' | 'M' | 'L' | 'XL' | 'XXL' | 'OS' = 'M',
+): Promise<number> {
+  return (
+    await prisma.productVariant.findUniqueOrThrow({
+      where: { productId_size: { productId, size } },
+    })
+  ).stockQuantity;
 }
 
 /** Extracts the first link containing `needle` from the latest email sent to `to`. */

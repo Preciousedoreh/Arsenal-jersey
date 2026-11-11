@@ -24,12 +24,14 @@ import {
   adminListProductsQuery,
   createProductBody,
   listProductsQuery,
-  productCategorySchema,
+  badgeSchema,
   productIdParams,
   productSlugParams,
+  sizeSchema,
   stockAdjustmentBody,
   updateProductBody,
 } from '../modules/products/products.schemas.js';
+import { createCategoryBody, categoryIdParams, updateCategoryBody } from '../modules/categories/categories.schemas.js';
 import {
   listUsersQuery,
   roleSchema,
@@ -69,30 +71,60 @@ const Pagination = z
   })
   .meta({ id: 'Pagination' });
 
+const SizeStock = z.object({ size: sizeSchema, stockQuantity: z.number().int(), inStock: z.boolean() }).meta({ id: 'SizeStock' });
+
 const PublicProduct = z
   .object({
     id: z.string(),
     name: z.string(),
     slug: z.string(),
+    subtitle: z.string().nullable(),
     description: z.string(),
-    category: productCategorySchema,
+    category: z.object({ id: z.string(), slug: z.string(), name: z.string() }),
     priceCents: z.number().int(),
     currency: z.string(),
     sku: z.string(),
     images: z.array(z.string()),
-    stockQuantity: z.number().int(),
+    features: z.array(z.string()),
+    specs: z.array(z.object({ label: z.string(), value: z.string() })),
+    tags: z.array(z.string()),
+    badge: badgeSchema.nullable(),
+    isFeatured: z.boolean(),
+    isBestSeller: z.boolean(),
+    isCustomizable: z.boolean(),
+    printPriceCents: z.number().int(),
+    printColor: z.string().nullable(),
+    colorName: z.string().nullable(),
+    colorHex: z.string().nullable(),
+    rating: z.number().nullable(),
+    reviewCount: z.number().int(),
+    sizes: z.array(SizeStock),
+    totalStock: z.number().int(),
     inStock: z.boolean(),
   })
   .meta({ id: 'PublicProduct' });
 
 const AdminProduct = PublicProduct.extend({
+  sizes: z.array(SizeStock.extend({ isLowStock: z.boolean() })),
   lowStockThreshold: z.number().int(),
-  isLowStock: z.boolean(),
   isActive: z.boolean(),
   deletedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 }).meta({ id: 'AdminProduct' });
+
+const Category = z
+  .object({
+    id: z.string(),
+    slug: z.string(),
+    name: z.string(),
+    description: z.string(),
+    imageUrl: z.string().nullable(),
+    sortOrder: z.number().int(),
+    isActive: z.boolean(),
+    productCount: z.number().int(),
+  })
+  .meta({ id: 'Category' });
 
 const OrderItem = z
   .object({
@@ -100,6 +132,8 @@ const OrderItem = z
     productId: z.string(),
     productName: z.string(),
     productSku: z.string(),
+    size: sizeSchema,
+    customization: z.object({ name: z.string(), number: z.string() }).nullable(),
     unitPriceCents: z.number().int(),
     quantity: z.number().int(),
     lineTotalCents: z.number().int(),
@@ -145,10 +179,12 @@ const User = z
 
 const InventoryRow = z
   .object({
+    variantId: z.string(),
     productId: z.string(),
     name: z.string(),
     sku: z.string(),
-    category: productCategorySchema,
+    size: sizeSchema,
+    categoryName: z.string(),
     isActive: z.boolean(),
     stockQuantity: z.number().int(),
     lowStockThreshold: z.number().int(),
@@ -162,6 +198,7 @@ const Movement = z
     id: z.string(),
     productId: z.string(),
     productName: z.string(),
+    size: sizeSchema,
     change: z.number().int(),
     stockAfter: z.number().int(),
     reason: inventoryReasonSchema,
@@ -442,7 +479,7 @@ route({
   method: 'post',
   path: '/api/admin/products/{id}/stock',
   tags: ['Admin · Inventory'],
-  summary: 'Adjust stock ({ change } or { set })',
+  summary: 'Adjust stock for one size ({ size, change } or { size, set })',
   security: secured,
   request: { params: productIdParams, ...body(stockAdjustmentBody) },
   responses: { 200: json(data(AdminProduct)), ...adminErrors, 409: err('Would go negative') },
@@ -532,6 +569,23 @@ route({
   tags: ['Health'],
   summary: 'Liveness + dependency checks',
   responses: { 200: { description: 'Healthy' }, 503: { description: 'Degraded' } },
+});
+
+// ── Categories & uploads ──
+route({ method: 'get', path: '/api/categories', tags: ['Categories'], summary: 'Active categories with product counts', responses: { 200: json(data(z.array(Category))) } });
+route({ method: 'get', path: '/api/admin/categories', tags: ['Admin · Categories'], summary: 'All categories', security: secured, responses: { 200: json(data(z.array(Category))), ...adminErrors } });
+route({ method: 'post', path: '/api/admin/categories', tags: ['Admin · Categories'], summary: 'Create category', security: secured, request: body(createCategoryBody), responses: { 201: json(data(Category), 'Created'), ...adminErrors, 409: err('Slug already in use') } });
+route({ method: 'patch', path: '/api/admin/categories/{id}', tags: ['Admin · Categories'], summary: 'Update category', security: secured, request: { params: categoryIdParams, ...body(updateCategoryBody) }, responses: { 200: json(data(Category)), ...adminErrors } });
+route({ method: 'delete', path: '/api/admin/categories/{id}', tags: ['Admin · Categories'], summary: 'Delete an empty category', security: secured, request: { params: categoryIdParams }, responses: { 200: json(data(z.object({ id: z.string() }))), ...adminErrors, 409: err('Category still has products') } });
+route({
+  method: 'post',
+  path: '/api/admin/uploads',
+  tags: ['Admin · Uploads'],
+  summary: 'Upload a product photo',
+  description: 'multipart/form-data with one image in the `file` field. JPEG, PNG or WebP only (checked by content, not file name), max ' + env.MAX_UPLOAD_MB + ' MB. Returns a public URL to put in a product\'s `images`.',
+  security: secured,
+  request: { body: { content: { 'multipart/form-data': { schema: z.object({ file: z.string().meta({ format: 'binary' }) }) } } } },
+  responses: { 201: json(data(z.object({ url: z.string(), key: z.string(), contentType: z.string(), size: z.number().int() })), 'Created'), ...adminErrors, 413: err('File too large'), 415: err('Not a JPEG, PNG or WebP image') },
 });
 
 export function buildOpenApiDocument() {

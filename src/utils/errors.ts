@@ -54,13 +54,18 @@ export class ConflictError extends AppError {
 export interface InsufficientStockDetails {
   productId: string;
   productName: string;
+  size?: string;
   requested: number;
   available: number;
 }
 
 export class InsufficientStockError extends ConflictError {
   constructor(details: InsufficientStockDetails) {
-    super(`Insufficient stock for "${details.productName}"`, 'INSUFFICIENT_STOCK', details);
+    super(
+      `Insufficient stock for "${details.productName}"${details.size ? ` (size ${details.size})` : ''}`,
+      'INSUFFICIENT_STOCK',
+      details,
+    );
   }
 }
 
